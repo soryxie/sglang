@@ -651,7 +651,7 @@ def get_dataset(args, tokenizer):
     elif args.dataset_name.startswith("random"):
         input_requests = sample_random_requests(
             input_len=args.random_input_len,
-            output_len=args.random_output_len,
+            short_num=args.random_short_num,
             num_prompts=args.num_prompts,
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
@@ -675,7 +675,7 @@ def get_dataset(args, tokenizer):
         input_requests = sample_mmmu_requests(
             num_requests=args.num_prompts,
             tokenizer=tokenizer,
-            fixed_output_len=args.random_output_len,
+            fixed_output_len=args.random_short_num,
             apply_chat_template=args.apply_chat_template,
             random_sample=True,
         )
@@ -1009,10 +1009,44 @@ def sample_sharegpt_requests(
     print(f"#Output tokens: {np.sum([x.output_len for x in filtered_dataset])}")
     return filtered_dataset
 
+def sample_input_lengths(num_prompts: int, total_tokens: int, min_len: int = 1, ):
+    eps: float = 1e-6
+    assert min_len >= 1, "min_len must be >= 1"
+    base = np.full(num_prompts, min_len)
+    remaining_tokens = total_tokens - base.sum()
+    if remaining_tokens < 0:
+        raise ValueError(f"min_len={min_len} 太大，无法满足总 token 数为 {total_tokens}")
+
+    np.random.seed(int(time.time() * 1000) % (2**32 - 1))
+    weights = np.random.rand(num_prompts)
+    weights /= (weights.sum() + eps)  
+    floats = weights * remaining_tokens
+    extra = np.floor(floats).astype(int)
+
+    diff = remaining_tokens - extra.sum()
+    for i in range(int(diff)):
+        extra[i % num_prompts] += 1
+
+    input_lens = base + extra
+    return input_lens.astype(int)
+
+def gen_len(num_prompts, num_short_len, avg_input_len, short=50):
+    short_len = [short for _ in range(num_short_len)]
+
+    remaining_len = num_prompts * avg_input_len - num_short_len * short
+    num_long_len = num_prompts - num_short_len
+    long_len = sample_input_lengths(
+        num_prompts=num_long_len,
+        total_tokens=remaining_len,
+        min_len=int(avg_input_len * 0.2),
+    )
+    input_lens = np.concatenate([short_len, long_len])
+    np.random.shuffle(input_lens)
+    return input_lens
 
 def sample_random_requests(
     input_len: int,
-    output_len: int,
+    short_num: int,
     num_prompts: int,
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
@@ -1020,16 +1054,13 @@ def sample_random_requests(
     random_sample: bool = True,
     return_text: bool = True,
 ) -> List[DatasetRow]:
-    input_lens = np.random.randint(
-        max(int(input_len * range_ratio), 1),
-        input_len + 1,
-        size=num_prompts,
+    input_lens = gen_len(
+        num_prompts=num_prompts,
+        num_short_len=short_num,
+        avg_input_len=input_len,
+        short=50,
     )
-    output_lens = np.random.randint(
-        int(output_len * range_ratio),
-        output_len + 1,
-        size=num_prompts,
-    )
+    output_lens = np.full(num_prompts, 10)
 
     if random_sample:
         # Sample token ids from ShareGPT and repeat/truncate them to satisfy the input_lens
@@ -1539,7 +1570,7 @@ async def benchmark(
             "max_concurrency": max_concurrency,
             "sharegpt_output_len": args.sharegpt_output_len,
             "random_input_len": args.random_input_len,
-            "random_output_len": args.random_output_len,
+            "random_short_num": args.random_short_num,
             "random_range_ratio": args.random_range_ratio,
             # Results
             "duration": benchmark_duration,
@@ -1580,7 +1611,7 @@ async def benchmark(
     else:
         now = datetime.now().strftime("%m%d")
         if args.dataset_name.startswith("random"):
-            output_file_name = f"{args.backend}_{now}_{args.num_prompts}_{args.random_input_len}_{args.random_output_len}.jsonl"
+            output_file_name = f"{args.backend}_{now}_{args.num_prompts}_{args.random_input_len}_{args.random_short_num}.jsonl"
         else:
             output_file_name = f"{args.backend}_{now}_{args.num_prompts}_sharegpt.jsonl"
 
@@ -1860,8 +1891,8 @@ if __name__ == "__main__":
         help="Number of input tokens per request, used only for random dataset.",
     )
     parser.add_argument(
-        "--random-output-len",
-        default=1024,
+        "--random-short-num",
+        default=0,
         type=int,
         help="Number of output tokens per request, used only for random dataset.",
     )
