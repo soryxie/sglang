@@ -177,3 +177,14 @@ def generate_workload(num_requests=100):
             })
     tasks.sort(key=lambda x: x['arrival_time'])
     return tasks
+
+if __name__ == "__main__":
+    sample_sharegpt_requests(
+        dataset_path=SHAREGPT_URL,
+        num_requests=100,
+        tokenizer=tokenizer,
+        fixed_output_len=50,
+        context_len=1024,
+        prompt_suffix="",
+        apply_chat_template=False
+    )
